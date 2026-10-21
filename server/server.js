@@ -1,10 +1,10 @@
+require('dotenv').config();
+
 const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
 const sharp = require('sharp');
-
-require('dotenv').config();
 
 const app = express();
 
@@ -17,14 +17,6 @@ const BASE_URL = (
 const PROGRESS_SECRET =
     process.env.PROGRESS_SECRET ||
     'change-this-secret-in-production';
-
-let fontBase64 = null;
-
-const FONT_URL =
-    'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosans/static/NotoSans-Regular.ttf';
-
-const FONT_BOLD_URL =
-    'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosans/static/NotoSans-Bold.ttf';
 
 app.use(cors({
     origin: [
@@ -46,44 +38,6 @@ const transporter = nodemailer.createTransport({
         pass: process.env.SMTP_PASS
     }
 });
-
-async function loadFonts()
-{
-    if (fontBase64)
-        return fontBase64;
-
-    try
-    {
-        const [regularResponse, boldResponse] = await Promise.all([
-            fetch(FONT_URL),
-            fetch(FONT_BOLD_URL)
-        ]);
-
-        if (!regularResponse.ok || !boldResponse.ok)
-        {
-            throw new Error('Unable to download font from CDN');
-        }
-
-        const regularBuffer =
-            Buffer.from(await regularResponse.arrayBuffer());
-
-        const boldBuffer =
-            Buffer.from(await boldResponse.arrayBuffer());
-
-        fontBase64 = {
-            regular: regularBuffer.toString('base64'),
-            bold: boldBuffer.toString('base64')
-        };
-
-        return fontBase64;
-    }
-    catch (error)
-    {
-        console.error('Font loading error:', error.message);
-
-        return null;
-    }
-}
 
 function escapeHtml(value)
 {
@@ -166,7 +120,7 @@ function verifyProgressToken(token)
     }
 }
 
-function progressSvg(percent, durationMinutes, fonts)
+function progressSvg(percent)
 {
     const safePercent = Math.max(
         0,
@@ -177,74 +131,16 @@ function progressSvg(percent, durationMinutes, fonts)
         560 * safePercent / 100
     );
 
-    const regularFont = fonts
-        ? `
-            @font-face {
-                font-family: 'NotoProgress';
-                src: url(data:font/ttf;base64,${fonts.regular});
-            }
-        `
-        : '';
-
-    const boldFont = fonts
-        ? `
-            @font-face {
-                font-family: 'NotoProgressBold';
-                src: url(data:font/ttf;base64,${fonts.bold});
-            }
-        `
-        : '';
-
     return `
 <svg
     xmlns="http://www.w3.org/2000/svg"
     width="600"
-    height="110"
-    viewBox="0 0 600 110"
+    height="70"
+    viewBox="0 0 600 70"
 >
-    <defs>
-        <style>
-            ${regularFont}
-            ${boldFont}
-
-            .regular {
-                font-family: 'NotoProgress', sans-serif;
-            }
-
-            .bold {
-                font-family: 'NotoProgressBold', sans-serif;
-            }
-        </style>
-    </defs>
-
-    <rect
-        x="0"
-        y="0"
-        width="600"
-        height="110"
-        fill="#ffffff"
-    />
-
-    <text
-        x="20"
-        y="28"
-        class="regular"
-        font-size="16"
-        fill="#475569"
-    >Progress</text>
-
-    <text
-        x="580"
-        y="28"
-        text-anchor="end"
-        class="bold"
-        font-size="18"
-        fill="#0f172a"
-    >${Math.round(safePercent)}%</text>
-
     <rect
         x="20"
-        y="45"
+        y="21"
         width="560"
         height="28"
         rx="14"
@@ -254,22 +150,13 @@ function progressSvg(percent, durationMinutes, fonts)
 
     <rect
         x="20"
-        y="45"
+        y="21"
         width="${width}"
         height="28"
         rx="14"
         ry="14"
         fill="#0f766e"
     />
-
-    <text
-        x="300"
-        y="98"
-        text-anchor="middle"
-        class="regular"
-        font-size="14"
-        fill="#475569"
-    >Expected duration: ${durationMinutes} minutes</text>
 </svg>
 `;
 }
@@ -319,44 +206,107 @@ app.post('/api/send-email', async (req, res) =>
         escapeHtml(subject.trim());
 
     const html = `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+</head>
+
+<body style="
+    margin:0;
+    padding:0;
+    background:#ffffff;
+">
+
 <div style="
-    font-family: Arial, Helvetica, sans-serif;
-    padding: 24px;
-    background: #ffffff;
+    font-family:Arial,Helvetica,sans-serif;
+    padding:24px;
+    background:#ffffff;
+    max-width:650px;
 ">
 
     <h2 style="
-        margin: 0 0 16px 0;
-        font-size: 24px;
-        color: #111827;
+        margin:0 0 16px 0;
+        font-size:24px;
+        line-height:32px;
+        color:#111827;
+        font-family:Arial,Helvetica,sans-serif;
     ">
         ${safeSubject}
     </h2>
 
     <p style="
-        margin: 0 0 20px 0;
-        font-size: 16px;
-        color: #374151;
+        margin:0 0 20px 0;
+        font-size:16px;
+        line-height:24px;
+        color:#374151;
+        font-family:Arial,Helvetica,sans-serif;
     ">
         Expected duration:
         <strong>${minutes} minutes</strong>
     </p>
 
-    <img
-        src="${imageUrl}"
+    <table
+        cellpadding="0"
+        cellspacing="0"
+        border="0"
         width="600"
-        height="110"
-        alt="Progress"
-        style="
-            display: block;
-            width: 600px;
-            max-width: 100%;
-            height: auto;
-            border: 0;
-        "
+        style="width:600px;max-width:100%;"
     >
+        <tr>
+            <td
+                align="left"
+                style="
+                    padding:0 0 8px 0;
+                    font-family:Arial,Helvetica,sans-serif;
+                    font-size:15px;
+                    line-height:20px;
+                    color:#475569;
+                "
+            >
+                Progress
+            </td>
+
+            <td
+                align="right"
+                style="
+                    padding:0 0 8px 0;
+                    font-family:Arial,Helvetica,sans-serif;
+                    font-size:17px;
+                    line-height:20px;
+                    font-weight:bold;
+                    color:#0f172a;
+                "
+            >
+                0%
+            </td>
+        </tr>
+
+        <tr>
+            <td colspan="2">
+                <img
+                    src="${imageUrl}"
+                    width="600"
+                    height="70"
+                    alt="Progress bar"
+                    style="
+                        display:block;
+                        width:600px;
+                        max-width:100%;
+                        height:70px;
+                        border:0;
+                        outline:none;
+                        text-decoration:none;
+                    "
+                >
+            </td>
+        </tr>
+    </table>
 
 </div>
+
+</body>
+</html>
 `;
 
     const text = `
@@ -427,19 +377,15 @@ app.get(
                 )
             );
 
-        const fonts = await loadFonts();
+        const svg =
+            progressSvg(percent);
 
-        const svg = progressSvg(
-            percent,
-            data.durationMinutes,
-            fonts
-        );
-
-        const image = await sharp(
-            Buffer.from(svg)
-        )
-        .png()
-        .toBuffer();
+        const image =
+            await sharp(
+                Buffer.from(svg)
+            )
+            .png()
+            .toBuffer();
 
         res.set({
             'Content-Type': 'image/png',
