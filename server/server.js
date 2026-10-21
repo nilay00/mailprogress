@@ -9,7 +9,7 @@ const sharp = require('sharp');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const BASE_URL = (process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 const records = new Map();
 
 app.use(express.json());
