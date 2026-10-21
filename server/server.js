@@ -15,7 +15,7 @@ const records = new Map();
 
 app.use(cors({
     origin: [
-        'http://localhost:5173',
+        'https://mail-progress.netlify.app',
         process.env.CLIENT_URL
     ].filter(Boolean),
     methods: ['GET', 'POST', 'OPTIONS'],
