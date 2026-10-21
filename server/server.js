@@ -8,7 +8,7 @@ const app = express();
 
 const PORT = Number(process.env.PORT) || 3001;
 const BASE_URL = (
-  process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`
+  process.env.BASE_URL || `http://localhost:${PORT}`
 ).replace(/\/$/, "");
 
 const allowedOrigins = [
