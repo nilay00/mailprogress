@@ -4,6 +4,7 @@ require('dotenv').config();
 
 const crypto = require('crypto');
 const express = require('express');
+const cors = require('cors');
 const nodemailer = require('nodemailer');
 const sharp = require('sharp');
 
@@ -11,6 +12,15 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 const records = new Map();
+
+app.use(cors({
+    origin: [
+        'http://localhost:5173',
+        process.env.CLIENT_URL
+    ].filter(Boolean),
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type']
+}));
 
 app.use(express.json());
 
