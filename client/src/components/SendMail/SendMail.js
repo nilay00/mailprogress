@@ -1,5 +1,6 @@
 
 import { ref } from 'vue';
+const API_URL = import.meta.env.VITE_API_URL || "";
 
 export default
 {
@@ -29,13 +30,12 @@ export default
 
 			try
 			{
-				await fetch('/api/send-email',
-				{
-					method : 'POST',
-					headers : {
-						'Content-Type' : 'application/json'
+				fetch(`${API_URL}/api/send-email`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json"
 					},
-					body : JSON.stringify(model.value)
+					body: JSON.stringify(model.value)
 				});
 			}
 			catch (err)
