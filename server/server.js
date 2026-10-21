@@ -1,10 +1,10 @@
-require('dotenv').config();
-
 const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
 const sharp = require('sharp');
+
+require('dotenv').config();
 
 const app = express();
 
@@ -14,57 +14,76 @@ const BASE_URL = (
     process.env.BASE_URL || `http://localhost:${PORT}`
 ).replace(/\/$/, '');
 
+const PROGRESS_SECRET =
+    process.env.PROGRESS_SECRET ||
+    'change-this-secret-in-production';
 
-// ============================================================
-// CORS
-// ============================================================
+let fontBase64 = null;
+
+const FONT_URL =
+    'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosans/static/NotoSans-Regular.ttf';
+
+const FONT_BOLD_URL =
+    'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosans/static/NotoSans-Bold.ttf';
 
 app.use(cors({
     origin: [
         'https://mail-progress.netlify.app',
         process.env.CLIENT_URL
     ].filter(Boolean),
-
     methods: ['GET', 'POST', 'OPTIONS'],
-
     allowedHeaders: ['Content-Type']
 }));
 
 app.use(express.json());
 
-
-// ============================================================
-// SMTP
-// ============================================================
-
 const transporter = nodemailer.createTransport({
-
     host: process.env.SMTP_HOST,
-
     port: Number(process.env.SMTP_PORT) || 587,
-
     secure: process.env.SMTP_SECURE === 'true',
-
     auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS
     }
-
 });
 
+async function loadFonts()
+{
+    if (fontBase64)
+        return fontBase64;
 
-// ============================================================
-// SECRET
-// ============================================================
+    try
+    {
+        const [regularResponse, boldResponse] = await Promise.all([
+            fetch(FONT_URL),
+            fetch(FONT_BOLD_URL)
+        ]);
 
-const PROGRESS_SECRET =
-    process.env.PROGRESS_SECRET ||
-    'change-this-secret-in-production';
+        if (!regularResponse.ok || !boldResponse.ok)
+        {
+            throw new Error('Unable to download font from CDN');
+        }
 
+        const regularBuffer =
+            Buffer.from(await regularResponse.arrayBuffer());
 
-// ============================================================
-// HTML ESCAPE
-// ============================================================
+        const boldBuffer =
+            Buffer.from(await boldResponse.arrayBuffer());
+
+        fontBase64 = {
+            regular: regularBuffer.toString('base64'),
+            bold: boldBuffer.toString('base64')
+        };
+
+        return fontBase64;
+    }
+    catch (error)
+    {
+        console.error('Font loading error:', error.message);
+
+        return null;
+    }
+}
 
 function escapeHtml(value)
 {
@@ -77,16 +96,11 @@ function escapeHtml(value)
     }[char]));
 }
 
-
-// ============================================================
-// CREATE SIGNED PROGRESS TOKEN
-// ============================================================
-
 function createProgressToken(durationMinutes)
 {
     const data = JSON.stringify({
         startedAt: Date.now(),
-        durationMinutes: durationMinutes
+        durationMinutes
     });
 
     const encoded = Buffer
@@ -101,11 +115,6 @@ function createProgressToken(durationMinutes)
     return `${encoded}.${signature}`;
 }
 
-
-// ============================================================
-// VERIFY PROGRESS TOKEN
-// ============================================================
-
 function verifyProgressToken(token)
 {
     try
@@ -113,9 +122,7 @@ function verifyProgressToken(token)
         const parts = token.split('.');
 
         if (parts.length !== 2)
-        {
             return null;
-        }
 
         const encoded = parts[0];
         const signature = parts[1];
@@ -144,7 +151,7 @@ function verifyProgressToken(token)
 
         if (
             !data.startedAt ||
-            !data.durationMinutes ||
+            !Number.isFinite(data.durationMinutes) ||
             data.durationMinutes <= 0
         )
         {
@@ -153,23 +160,13 @@ function verifyProgressToken(token)
 
         return data;
     }
-    catch (error)
+    catch
     {
-        console.error(
-            'Token verification error:',
-            error.message
-        );
-
         return null;
     }
 }
 
-
-// ============================================================
-// PROGRESS SVG
-// ============================================================
-
-function progressSvg(percent, durationMinutes)
+function progressSvg(percent, durationMinutes, fonts)
 {
     const safePercent = Math.max(
         0,
@@ -180,6 +177,24 @@ function progressSvg(percent, durationMinutes)
         560 * safePercent / 100
     );
 
+    const regularFont = fonts
+        ? `
+            @font-face {
+                font-family: 'NotoProgress';
+                src: url(data:font/ttf;base64,${fonts.regular});
+            }
+        `
+        : '';
+
+    const boldFont = fonts
+        ? `
+            @font-face {
+                font-family: 'NotoProgressBold';
+                src: url(data:font/ttf;base64,${fonts.bold});
+            }
+        `
+        : '';
+
     return `
 <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -187,6 +202,20 @@ function progressSvg(percent, durationMinutes)
     height="110"
     viewBox="0 0 600 110"
 >
+    <defs>
+        <style>
+            ${regularFont}
+            ${boldFont}
+
+            .regular {
+                font-family: 'NotoProgress', sans-serif;
+            }
+
+            .bold {
+                font-family: 'NotoProgressBold', sans-serif;
+            }
+        </style>
+    </defs>
 
     <rect
         x="0"
@@ -199,7 +228,7 @@ function progressSvg(percent, durationMinutes)
     <text
         x="20"
         y="28"
-        font-family="DejaVu Sans"
+        class="regular"
         font-size="16"
         fill="#475569"
     >Progress</text>
@@ -208,9 +237,8 @@ function progressSvg(percent, durationMinutes)
         x="580"
         y="28"
         text-anchor="end"
-        font-family="DejaVu Sans"
+        class="bold"
         font-size="18"
-        font-weight="bold"
         fill="#0f172a"
     >${Math.round(safePercent)}%</text>
 
@@ -220,6 +248,7 @@ function progressSvg(percent, durationMinutes)
         width="560"
         height="28"
         rx="14"
+        ry="14"
         fill="#e2e8f0"
     />
 
@@ -229,6 +258,7 @@ function progressSvg(percent, durationMinutes)
         width="${width}"
         height="28"
         rx="14"
+        ry="14"
         fill="#0f766e"
     />
 
@@ -236,19 +266,13 @@ function progressSvg(percent, durationMinutes)
         x="300"
         y="98"
         text-anchor="middle"
-        font-family="DejaVu Sans"
+        class="regular"
         font-size="14"
         fill="#475569"
     >Expected duration: ${durationMinutes} minutes</text>
-
 </svg>
 `;
 }
-
-
-// ============================================================
-// SEND EMAIL
-// ============================================================
 
 app.post('/api/send-email', async (req, res) =>
 {
@@ -260,8 +284,6 @@ app.post('/api/send-email', async (req, res) =>
 
     const minutes = Number(durationMinutes);
 
-
-    // Validate email
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to || ''))
     {
         return res.status(400).json({
@@ -269,8 +291,6 @@ app.post('/api/send-email', async (req, res) =>
         });
     }
 
-
-    // Validate subject
     if (!subject || !String(subject).trim())
     {
         return res.status(400).json({
@@ -278,8 +298,6 @@ app.post('/api/send-email', async (req, res) =>
         });
     }
 
-
-    // Validate duration
     if (
         !Number.isFinite(minutes) ||
         minutes <= 0 ||
@@ -291,57 +309,35 @@ app.post('/api/send-email', async (req, res) =>
         });
     }
 
-
-    // ========================================================
-    // CREATE PROGRESS TOKEN
-    // ========================================================
-
     const progressToken =
         createProgressToken(minutes);
-
-
-    // ========================================================
-    // IMAGE URL
-    // ========================================================
 
     const imageUrl =
         `${BASE_URL}/api/progress/${progressToken}/image.png`;
 
-
-    // ========================================================
-    // EMAIL HTML
-    // ========================================================
-
     const safeSubject =
         escapeHtml(subject.trim());
 
-
     const html = `
-<div
-    style="
-        font-family: Arial, sans-serif;
-        padding: 24px;
-        background: #ffffff;
-    "
->
+<div style="
+    font-family: Arial, Helvetica, sans-serif;
+    padding: 24px;
+    background: #ffffff;
+">
 
-    <h2
-        style="
-            margin: 0 0 16px 0;
-            font-size: 24px;
-            color: #111827;
-        "
-    >
+    <h2 style="
+        margin: 0 0 16px 0;
+        font-size: 24px;
+        color: #111827;
+    ">
         ${safeSubject}
     </h2>
 
-    <p
-        style="
-            margin: 0 0 20px 0;
-            font-size: 16px;
-            color: #374151;
-        "
-    >
+    <p style="
+        margin: 0 0 20px 0;
+        font-size: 16px;
+        color: #374151;
+    ">
         Expected duration:
         <strong>${minutes} minutes</strong>
     </p>
@@ -350,7 +346,7 @@ app.post('/api/send-email', async (req, res) =>
         src="${imageUrl}"
         width="600"
         height="110"
-        alt="Email progress"
+        alt="Progress"
         style="
             display: block;
             width: 600px;
@@ -363,11 +359,6 @@ app.post('/api/send-email', async (req, res) =>
 </div>
 `;
 
-
-    // ========================================================
-    // TEXT VERSION
-    // ========================================================
-
     const text = `
 ${subject.trim()}
 
@@ -376,34 +367,21 @@ Expected duration: ${minutes} minutes.
 Progress: 0%
 `;
 
-
-    // ========================================================
-    // SEND
-    // ========================================================
-
     try
     {
         await transporter.sendMail({
-
             from:
                 process.env.SMTP_FROM ||
                 process.env.SMTP_USER,
-
             to,
-
             subject: subject.trim(),
-
             html,
-
             text
-
         });
-
 
         return res.json({
             success: true
         });
-
     }
     catch (err)
     {
@@ -418,24 +396,14 @@ Progress: 0%
     }
 });
 
-
-// ============================================================
-// PROGRESS IMAGE
-// ============================================================
-
 app.get(
     '/api/progress/:token/image.png',
     async (req, res) =>
 {
     try
     {
-        // ====================================================
-        // VERIFY TOKEN
-        // ====================================================
-
         const data =
             verifyProgressToken(req.params.token);
-
 
         if (!data)
         {
@@ -443,11 +411,6 @@ app.get(
                 'Invalid progress link.'
             );
         }
-
-
-        // ====================================================
-        // CALCULATE PROGRESS
-        // ====================================================
 
         const durationMs =
             data.durationMinutes * 60 * 1000;
@@ -464,55 +427,29 @@ app.get(
                 )
             );
 
+        const fonts = await loadFonts();
 
-        console.log(
-            `Progress: ${Math.round(percent)}%`
+        const svg = progressSvg(
+            percent,
+            data.durationMinutes,
+            fonts
         );
 
-
-        // ====================================================
-        // GENERATE SVG
-        // ====================================================
-
-        const svg =
-            progressSvg(
-                percent,
-                data.durationMinutes
-            );
-
-
-        // ====================================================
-        // SVG → PNG
-        // ====================================================
-
-        const image =
-            await sharp(
-                Buffer.from(svg)
-            )
-            .png()
-            .toBuffer();
-
-
-        // ====================================================
-        // CACHE CONTROL
-        // ====================================================
+        const image = await sharp(
+            Buffer.from(svg)
+        )
+        .png()
+        .toBuffer();
 
         res.set({
-
             'Content-Type': 'image/png',
-
             'Cache-Control':
                 'no-store, no-cache, must-revalidate, proxy-revalidate',
-
             'Pragma': 'no-cache',
-
             'Expires': '0'
-
         });
 
-
         return res.send(image);
-
     }
     catch (err)
     {
@@ -527,11 +464,6 @@ app.get(
     }
 });
 
-
-// ============================================================
-// HEALTH CHECK
-// ============================================================
-
 app.get('/api/health', (req, res) =>
 {
     res.json({
@@ -539,11 +471,6 @@ app.get('/api/health', (req, res) =>
         message: 'Mail progress API is running.'
     });
 });
-
-
-// ============================================================
-// LOCAL SERVER
-// ============================================================
 
 app.listen(PORT, () =>
 {
