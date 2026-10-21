@@ -1,4 +1,3 @@
-const path = require('path');
 require('dotenv').config();
 
 const crypto = require('crypto');
@@ -15,8 +14,6 @@ const BASE_URL = (
     process.env.BASE_URL || `http://localhost:${PORT}`
 ).replace(/\/$/, '');
 
-const records = new Map();
-
 
 // ============================================================
 // CORS
@@ -32,11 +29,6 @@ app.use(cors({
 
     allowedHeaders: ['Content-Type']
 }));
-
-
-// ============================================================
-// JSON BODY
-// ============================================================
 
 app.use(express.json());
 
@@ -62,7 +54,16 @@ const transporter = nodemailer.createTransport({
 
 
 // ============================================================
-// ESCAPE HTML
+// SECRET
+// ============================================================
+
+const PROGRESS_SECRET =
+    process.env.PROGRESS_SECRET ||
+    'change-this-secret-in-production';
+
+
+// ============================================================
+// HTML ESCAPE
 // ============================================================
 
 function escapeHtml(value)
@@ -74,6 +75,93 @@ function escapeHtml(value)
         '"': '&quot;',
         "'": '&#39;'
     }[char]));
+}
+
+
+// ============================================================
+// CREATE SIGNED PROGRESS TOKEN
+// ============================================================
+
+function createProgressToken(durationMinutes)
+{
+    const data = JSON.stringify({
+        startedAt: Date.now(),
+        durationMinutes: durationMinutes
+    });
+
+    const encoded = Buffer
+        .from(data)
+        .toString('base64url');
+
+    const signature = crypto
+        .createHmac('sha256', PROGRESS_SECRET)
+        .update(encoded)
+        .digest('base64url');
+
+    return `${encoded}.${signature}`;
+}
+
+
+// ============================================================
+// VERIFY PROGRESS TOKEN
+// ============================================================
+
+function verifyProgressToken(token)
+{
+    try
+    {
+        const parts = token.split('.');
+
+        if (parts.length !== 2)
+        {
+            return null;
+        }
+
+        const encoded = parts[0];
+        const signature = parts[1];
+
+        const expectedSignature = crypto
+            .createHmac('sha256', PROGRESS_SECRET)
+            .update(encoded)
+            .digest('base64url');
+
+        const a = Buffer.from(signature);
+        const b = Buffer.from(expectedSignature);
+
+        if (
+            a.length !== b.length ||
+            !crypto.timingSafeEqual(a, b)
+        )
+        {
+            return null;
+        }
+
+        const data = JSON.parse(
+            Buffer
+                .from(encoded, 'base64url')
+                .toString('utf8')
+        );
+
+        if (
+            !data.startedAt ||
+            !data.durationMinutes ||
+            data.durationMinutes <= 0
+        )
+        {
+            return null;
+        }
+
+        return data;
+    }
+    catch (error)
+    {
+        console.error(
+            'Token verification error:',
+            error.message
+        );
+
+        return null;
+    }
 }
 
 
@@ -92,8 +180,6 @@ function progressSvg(percent, durationMinutes)
         560 * safePercent / 100
     );
 
-    const percentageText = `${Math.round(safePercent)}%`;
-
     return `
 <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -102,7 +188,6 @@ function progressSvg(percent, durationMinutes)
     viewBox="0 0 600 110"
 >
 
-    <!-- Background -->
     <rect
         x="0"
         y="0"
@@ -111,18 +196,14 @@ function progressSvg(percent, durationMinutes)
         fill="#ffffff"
     />
 
-    <!-- Progress label -->
     <text
         x="20"
         y="28"
         font-family="DejaVu Sans"
         font-size="16"
         fill="#475569"
-    >
-        Progress
-    </text>
+    >Progress</text>
 
-    <!-- Percentage -->
     <text
         x="580"
         y="28"
@@ -131,33 +212,26 @@ function progressSvg(percent, durationMinutes)
         font-size="18"
         font-weight="bold"
         fill="#0f172a"
-    >
-        ${percentageText}
-    </text>
+    >${Math.round(safePercent)}%</text>
 
-    <!-- Progress background -->
     <rect
         x="20"
         y="45"
         width="560"
         height="28"
         rx="14"
-        ry="14"
         fill="#e2e8f0"
     />
 
-    <!-- Progress -->
     <rect
         x="20"
         y="45"
         width="${width}"
         height="28"
         rx="14"
-        ry="14"
         fill="#0f766e"
     />
 
-    <!-- Duration -->
     <text
         x="300"
         y="98"
@@ -165,9 +239,7 @@ function progressSvg(percent, durationMinutes)
         font-family="DejaVu Sans"
         font-size="14"
         fill="#475569"
-    >
-        Expected duration: ${durationMinutes} minutes
-    </text>
+    >Expected duration: ${durationMinutes} minutes</text>
 
 </svg>
 `;
@@ -189,10 +261,7 @@ app.post('/api/send-email', async (req, res) =>
     const minutes = Number(durationMinutes);
 
 
-    // --------------------------------------------------------
     // Validate email
-    // --------------------------------------------------------
-
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to || ''))
     {
         return res.status(400).json({
@@ -201,10 +270,7 @@ app.post('/api/send-email', async (req, res) =>
     }
 
 
-    // --------------------------------------------------------
     // Validate subject
-    // --------------------------------------------------------
-
     if (!subject || !String(subject).trim())
     {
         return res.status(400).json({
@@ -213,10 +279,7 @@ app.post('/api/send-email', async (req, res) =>
     }
 
 
-    // --------------------------------------------------------
     // Validate duration
-    // --------------------------------------------------------
-
     if (
         !Number.isFinite(minutes) ||
         minutes <= 0 ||
@@ -229,43 +292,29 @@ app.post('/api/send-email', async (req, res) =>
     }
 
 
-    // --------------------------------------------------------
-    // Create progress record
-    // --------------------------------------------------------
+    // ========================================================
+    // CREATE PROGRESS TOKEN
+    // ========================================================
 
-    const record = {
-
-        id: crypto.randomUUID(),
-
-        to,
-
-        subject: String(subject).trim(),
-
-        startedAt: Date.now(),
-
-        durationMinutes: minutes,
-
-        durationMs: minutes * 60 * 1000
-
-    };
+    const progressToken =
+        createProgressToken(minutes);
 
 
-    records.set(record.id, record);
-
-
-    // --------------------------------------------------------
-    // Progress image URL
-    // --------------------------------------------------------
+    // ========================================================
+    // IMAGE URL
+    // ========================================================
 
     const imageUrl =
-        `${BASE_URL}/api/progress/${record.id}/image.png`;
+        `${BASE_URL}/api/progress/${progressToken}/image.png`;
 
 
-    // --------------------------------------------------------
-    // Email HTML
-    // --------------------------------------------------------
+    // ========================================================
+    // EMAIL HTML
+    // ========================================================
 
-    const safeSubject = escapeHtml(record.subject);
+    const safeSubject =
+        escapeHtml(subject.trim());
+
 
     const html = `
 <div
@@ -294,7 +343,7 @@ app.post('/api/send-email', async (req, res) =>
         "
     >
         Expected duration:
-        <strong>${record.durationMinutes} minutes</strong>
+        <strong>${minutes} minutes</strong>
     </p>
 
     <img
@@ -314,13 +363,23 @@ app.post('/api/send-email', async (req, res) =>
 </div>
 `;
 
-    const text = `
-${record.subject}
 
-Expected duration: ${record.durationMinutes} minutes.
+    // ========================================================
+    // TEXT VERSION
+    // ========================================================
+
+    const text = `
+${subject.trim()}
+
+Expected duration: ${minutes} minutes.
 
 Progress: 0%
 `;
+
+
+    // ========================================================
+    // SEND
+    // ========================================================
 
     try
     {
@@ -330,9 +389,9 @@ Progress: 0%
                 process.env.SMTP_FROM ||
                 process.env.SMTP_USER,
 
-            to: record.to,
+            to,
 
-            subject: record.subject,
+            subject: subject.trim(),
 
             html,
 
@@ -342,15 +401,12 @@ Progress: 0%
 
 
         return res.json({
-            success: true,
-            id: record.id
+            success: true
         });
 
     }
     catch (err)
     {
-        records.delete(record.id);
-
         console.error(
             'Email error:',
             err.message
@@ -362,34 +418,72 @@ Progress: 0%
     }
 });
 
-app.get('/api/progress/:id/image.png', async (req, res) =>
+
+// ============================================================
+// PROGRESS IMAGE
+// ============================================================
+
+app.get(
+    '/api/progress/:token/image.png',
+    async (req, res) =>
 {
     try
     {
-        const record =
-            records.get(req.params.id);
+        // ====================================================
+        // VERIFY TOKEN
+        // ====================================================
 
-        if (!record)
+        const data =
+            verifyProgressToken(req.params.token);
+
+
+        if (!data)
         {
             return res.status(404).send(
-                'Progress record not found.'
+                'Invalid progress link.'
             );
         }
 
+
+        // ====================================================
+        // CALCULATE PROGRESS
+        // ====================================================
+
+        const durationMs =
+            data.durationMinutes * 60 * 1000;
+
         const elapsed =
-            Date.now() - record.startedAt;
+            Date.now() - data.startedAt;
 
         const percent =
             Math.min(
                 100,
-                (elapsed / record.durationMs) * 100
+                Math.max(
+                    0,
+                    elapsed / durationMs * 100
+                )
             );
+
+
+        console.log(
+            `Progress: ${Math.round(percent)}%`
+        );
+
+
+        // ====================================================
+        // GENERATE SVG
+        // ====================================================
 
         const svg =
             progressSvg(
                 percent,
-                record.durationMinutes
+                data.durationMinutes
             );
+
+
+        // ====================================================
+        // SVG → PNG
+        // ====================================================
 
         const image =
             await sharp(
@@ -397,6 +491,12 @@ app.get('/api/progress/:id/image.png', async (req, res) =>
             )
             .png()
             .toBuffer();
+
+
+        // ====================================================
+        // CACHE CONTROL
+        // ====================================================
+
         res.set({
 
             'Content-Type': 'image/png',
@@ -422,10 +522,15 @@ app.get('/api/progress/:id/image.png', async (req, res) =>
         );
 
         return res.status(500).send(
-            'Unable to generate image.'
+            'Unable to generate progress image.'
         );
     }
 });
+
+
+// ============================================================
+// HEALTH CHECK
+// ============================================================
 
 app.get('/api/health', (req, res) =>
 {
@@ -434,6 +539,11 @@ app.get('/api/health', (req, res) =>
         message: 'Mail progress API is running.'
     });
 });
+
+
+// ============================================================
+// LOCAL SERVER
+// ============================================================
 
 app.listen(PORT, () =>
 {
