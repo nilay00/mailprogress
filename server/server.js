@@ -5,6 +5,7 @@ const express = require('express');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
 const sharp = require('sharp');
+const GifEncoder = require('gif-encoder');
 
 const app = express();
 
@@ -120,45 +121,243 @@ function verifyProgressToken(token)
     }
 }
 
-function progressSvg(percent)
+function digitSvg(digit, x, y, scale = 1)
+{
+    const segments = {
+        0: ['a', 'b', 'c', 'd', 'e', 'f'],
+        1: ['b', 'c'],
+        2: ['a', 'b', 'g', 'e', 'd'],
+        3: ['a', 'b', 'g', 'c', 'd'],
+        4: ['f', 'g', 'b', 'c'],
+        5: ['a', 'f', 'g', 'c', 'd'],
+        6: ['a', 'f', 'g', 'e', 'c', 'd'],
+        7: ['a', 'b', 'c'],
+        8: ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+        9: ['a', 'b', 'c', 'd', 'f', 'g']
+    };
+
+    const active = segments[digit] || [];
+
+    const w = 24 * scale;
+    const h = 42 * scale;
+    const t = 5 * scale;
+    const r = 2 * scale;
+
+    const shapes = {
+        a: `<rect x="${x + t}" y="${y}" width="${w - t * 2}" height="${t}" rx="${r}"/>`,
+        b: `<rect x="${x + w - t}" y="${y + t}" width="${t}" height="${h / 2 - t}" rx="${r}"/>`,
+        c: `<rect x="${x + w - t}" y="${y + h / 2}" width="${t}" height="${h / 2 - t}" rx="${r}"/>`,
+        d: `<rect x="${x + t}" y="${y + h - t}" width="${w - t * 2}" height="${t}" rx="${r}"/>`,
+        e: `<rect x="${x}" y="${y + h / 2}" width="${t}" height="${h / 2 - t}" rx="${r}"/>`,
+        f: `<rect x="${x}" y="${y + t}" width="${t}" height="${h / 2 - t}" rx="${r}"/>`,
+        g: `<rect x="${x + t}" y="${y + h / 2 - t / 2}" width="${w - t * 2}" height="${t}" rx="${r}"/>`
+    };
+
+    return active
+        .map(segment => shapes[segment])
+        .join('');
+}
+
+function percentSvg(percent)
 {
     const safePercent = Math.max(
         0,
-        Math.min(100, Number(percent) || 0)
+        Math.min(100, Math.round(percent))
     );
 
     const width = Math.round(
         560 * safePercent / 100
     );
 
+    const text = String(safePercent);
+
+    const digitWidth = 24;
+    const digitGap = 8;
+    const percentWidth = 24;
+
+    const totalWidth =
+        text.length * digitWidth +
+        (text.length - 1) * digitGap +
+        percentWidth;
+
+    let startX =
+        300 - totalWidth / 2;
+
+    let digits = '';
+
+    for (const digit of text)
+    {
+        digits += digitSvg(
+            digit,
+            startX,
+            2,
+            0.75
+        );
+
+        startX +=
+            digitWidth * 0.75 +
+            digitGap;
+    }
+
+    const percentX = startX + 2;
+
+    digits += `
+        <circle
+            cx="${percentX + 5}"
+            cy="7"
+            r="2.5"
+        />
+
+        <circle
+            cx="${percentX + 17}"
+            cy="35"
+            r="2.5"
+        />
+
+        <line
+            x1="${percentX + 19}"
+            y1="3"
+            x2="${percentX + 3}"
+            y2="39"
+            stroke="#0f172a"
+            stroke-width="4"
+        />
+    `;
+
     return `
 <svg
     xmlns="http://www.w3.org/2000/svg"
     width="600"
-    height="70"
-    viewBox="0 0 600 70"
+    height="80"
+    viewBox="0 0 600 80"
 >
     <rect
+        width="600"
+        height="80"
+        fill="#ffffff"
+    />
+
+    <g
+        fill="#0f172a"
+    >
+        ${digits}
+    </g>
+
+    <rect
         x="20"
-        y="21"
+        y="48"
         width="560"
         height="28"
         rx="14"
-        ry="14"
         fill="#e2e8f0"
     />
 
     <rect
         x="20"
-        y="21"
+        y="48"
         width="${width}"
         height="28"
         rx="14"
-        ry="14"
         fill="#0f766e"
     />
 </svg>
 `;
+}
+
+async function svgToRgba(svg)
+{
+    return await sharp(
+        Buffer.from(svg)
+    )
+    .ensureAlpha()
+    .raw()
+    .toBuffer();
+}
+
+async function createProgressGif(
+    startingPercent,
+    durationMinutes
+)
+{
+    const width = 600;
+    const height = 80;
+
+    const remainingPercent =
+        Math.max(
+            0,
+            100 - startingPercent
+        );
+
+    const frameCount =
+        Math.max(
+            20,
+            Math.min(
+                60,
+                Math.ceil(remainingPercent)
+            )
+        );
+
+    const durationMs =
+        durationMinutes * 60 * 1000;
+
+    const remainingMs =
+        Math.max(
+            1000,
+            durationMs * remainingPercent / 100
+        );
+
+    const delay =
+        Math.max(
+            100,
+            Math.round(
+                remainingMs / frameCount
+            )
+        );
+
+    const encoder =
+        new GifEncoder(
+            width,
+            height
+        );
+
+    encoder.writeHeader();
+
+    encoder.setRepeat(0);
+
+    encoder.setDelay(delay);
+
+    encoder.setQuality(10);
+
+    for (let i = 0; i < frameCount; i++)
+    {
+        const progress =
+            startingPercent +
+            (
+                remainingPercent *
+                i /
+                (frameCount - 1)
+            );
+
+        const svg =
+            percentSvg(progress);
+
+        const rgba =
+            await svgToRgba(svg);
+
+        encoder.addFrame(rgba);
+    }
+
+    const finalSvg =
+        percentSvg(100);
+
+    const finalRgba =
+        await svgToRgba(finalSvg);
+
+    encoder.addFrame(finalRgba);
+
+    encoder.finish();
+
+    return encoder.read();
 }
 
 app.post('/api/send-email', async (req, res) =>
@@ -200,7 +399,7 @@ app.post('/api/send-email', async (req, res) =>
         createProgressToken(minutes);
 
     const imageUrl =
-        `${BASE_URL}/api/progress/${progressToken}/image.png`;
+        `${BASE_URL}/api/progress/${progressToken}/progress.gif`;
 
     const safeSubject =
         escapeHtml(subject.trim());
@@ -246,62 +445,21 @@ app.post('/api/send-email', async (req, res) =>
         <strong>${minutes} minutes</strong>
     </p>
 
-    <table
-        cellpadding="0"
-        cellspacing="0"
-        border="0"
+    <img
+        src="${imageUrl}"
         width="600"
-        style="width:600px;max-width:100%;"
+        height="80"
+        alt="Progress"
+        style="
+            display:block;
+            width:600px;
+            max-width:100%;
+            height:auto;
+            border:0;
+            outline:none;
+            text-decoration:none;
+        "
     >
-        <tr>
-            <td
-                align="left"
-                style="
-                    padding:0 0 8px 0;
-                    font-family:Arial,Helvetica,sans-serif;
-                    font-size:15px;
-                    line-height:20px;
-                    color:#475569;
-                "
-            >
-                Progress
-            </td>
-
-            <td
-                align="right"
-                style="
-                    padding:0 0 8px 0;
-                    font-family:Arial,Helvetica,sans-serif;
-                    font-size:17px;
-                    line-height:20px;
-                    font-weight:bold;
-                    color:#0f172a;
-                "
-            >
-                0%
-            </td>
-        </tr>
-
-        <tr>
-            <td colspan="2">
-                <img
-                    src="${imageUrl}"
-                    width="600"
-                    height="70"
-                    alt="Progress bar"
-                    style="
-                        display:block;
-                        width:600px;
-                        max-width:100%;
-                        height:70px;
-                        border:0;
-                        outline:none;
-                        text-decoration:none;
-                    "
-                >
-            </td>
-        </tr>
-    </table>
 
 </div>
 
@@ -323,9 +481,14 @@ Progress: 0%
             from:
                 process.env.SMTP_FROM ||
                 process.env.SMTP_USER,
+
             to,
-            subject: subject.trim(),
+
+            subject:
+                subject.trim(),
+
             html,
+
             text
         });
 
@@ -347,13 +510,15 @@ Progress: 0%
 });
 
 app.get(
-    '/api/progress/:token/image.png',
+    '/api/progress/:token/progress.gif',
     async (req, res) =>
 {
     try
     {
         const data =
-            verifyProgressToken(req.params.token);
+            verifyProgressToken(
+                req.params.token
+            );
 
         if (!data)
         {
@@ -363,49 +528,50 @@ app.get(
         }
 
         const durationMs =
-            data.durationMinutes * 60 * 1000;
+            data.durationMinutes *
+            60 *
+            1000;
 
         const elapsed =
-            Date.now() - data.startedAt;
+            Date.now() -
+            data.startedAt;
 
-        const percent =
+        const startingPercent =
             Math.min(
                 100,
                 Math.max(
                     0,
-                    elapsed / durationMs * 100
+                    elapsed /
+                    durationMs *
+                    100
                 )
             );
 
-        const svg =
-            progressSvg(percent);
-
-        const image =
-            await sharp(
-                Buffer.from(svg)
-            )
-            .png()
-            .toBuffer();
+        const gif =
+            await createProgressGif(
+                startingPercent,
+                data.durationMinutes
+            );
 
         res.set({
-            'Content-Type': 'image/png',
+            'Content-Type': 'image/gif',
             'Cache-Control':
                 'no-store, no-cache, must-revalidate, proxy-revalidate',
             'Pragma': 'no-cache',
             'Expires': '0'
         });
 
-        return res.send(image);
+        return res.send(gif);
     }
     catch (err)
     {
         console.error(
-            'Image error:',
+            'GIF error:',
             err.message
         );
 
         return res.status(500).send(
-            'Unable to generate progress image.'
+            'Unable to generate progress GIF.'
         );
     }
 });
