@@ -123,8 +123,8 @@ app.post("/api/send-email", async (req, res) => {
 
   records.set(record.id, record);
 
-  const imageUrl =
-    `${BASE_URL}/api/progress/${record.id}/image.png`;
+	const imageUrl =
+  	`${BASE_URL}/api/progress/${record.id}/image.png?v=${Date.now()}`;
 
   const html = `
     <!doctype html>
